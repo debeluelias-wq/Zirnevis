@@ -5,8 +5,8 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <application
-        android:icon="@drawable/icon"
-        android:label="زیرنویس‌یار"
+        android:icon="@drawable/Icon"
+        android:label="YtDE"
         android:theme="@android:style/Theme.Material.NoActionBar">
         <activity android:name=".MainActivity" android:exported="true">
             <intent-filter>
