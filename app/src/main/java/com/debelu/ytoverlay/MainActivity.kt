@@ -282,7 +282,7 @@ class OverlayService : Service() {
         statusTextView.text = String.format("⠿ %02d:%02d", sec / 60, sec % 60)
         subtitles.find { currentTimeMs in it.startMs..it.endMs }?.let { subTextView.text = it.textFa }
     }
-        @SuppressLint("SetJavaScriptEnabled")
+    @SuppressLint("SetJavaScriptEnabled")
     private fun loadCaptionsViaWebView(videoId: String) {
         uiHandler.post {
             destroyWebView()
@@ -291,7 +291,17 @@ class OverlayService : Service() {
             wv.settings.javaScriptEnabled = true
             wv.settings.domStorageEnabled = true
             wv.settings.mediaPlaybackRequiresUserGesture = true
-            wv.settings.userAgentString = "Mozilla/5.0 (Linux; Android 13; SM-S711B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36"
+            wv.settings.userAgentString = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+
+            try {
+                val flag = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY else @Suppress("DEPRECATION") WindowManager.LayoutParams.TYPE_PHONE
+                val p = WindowManager.LayoutParams(
+                    1, 1, flag,
+                    WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE,
+                    PixelFormat.TRANSLUCENT
+                ).apply { gravity = Gravity.TOP or Gravity.START }
+                windowManager.addView(wv, p)
+            } catch (_: Exception) { }
 
             wv.addJavascriptInterface(object {
                 @JavascriptInterface
@@ -300,6 +310,12 @@ class OverlayService : Service() {
                     captionHandled = true
                     uiHandler.post { destroyWebView(); subTextView.text = "در حال ترجمه زیرنویس به فارسی..." }
                     processAndTranslateBody(rawBody)
+                }
+
+                @JavascriptInterface
+                fun onStatus(msg: String) {
+                    if (captionHandled) return
+                    uiHandler.post { subTextView.text = msg }
                 }
 
                 @JavascriptInterface
@@ -335,27 +351,62 @@ class OverlayService : Service() {
                     val js = """
                         (async function() {
                           try {
-                            document.querySelectorAll('video').forEach(v => { v.muted = true; v.pause(); });
-                            let pr = window.ytInitialPlayerResponse;
-                            if (!pr) {
-                              const m = document.documentElement.innerHTML.match(/ytInitialPlayerResponse\s*=\s*(\{.+?\});/);
-                              if (m) pr = JSON.parse(m[1]);
-                            }
-                            const tracks = pr?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
-                            if (!tracks || tracks.length === 0) {
-                              AndroidBridge.onFail("این ویدئو زیرنویس ندارد.");
+                            if (location.hostname.includes('consent.youtube')) {
+                              const btn = document.querySelector('form button');
+                              if (btn) btn.click();
                               return;
                             }
+                            const sleep = ms => new Promise(r => setTimeout(r, ms));
+                            let tracks = null;
+                            for (let i = 0; i < 16; i++) {
+                              document.querySelectorAll('video').forEach(v => { v.muted = true; v.pause(); });
+                              const mp = document.getElementById('movie_player');
+                              const pr = (mp && mp.getPlayerResponse) ? mp.getPlayerResponse() : window.ytInitialPlayerResponse;
+                              tracks = pr?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
+                              if (tracks && tracks.length > 0) break;
+
+                              if (i === 4 && window.ytcfg && window.ytcfg.get) {
+                                try {
+                                  const key = window.ytcfg.get('INNERTUBE_API_KEY');
+                                  const ctx = window.ytcfg.get('INNERTUBE_CONTEXT');
+                                  if (key && ctx) {
+                                    const apiRes = await fetch('/youtubei/v1/player?key=' + key, {
+                                      method: 'POST',
+                                      headers: {'Content-Type': 'application/json'},
+                                      body: JSON.stringify({ context: ctx, videoId: '$videoId' })
+                                    });
+                                    const apiJson = await apiRes.json();
+                                    tracks = apiJson?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
+                                    if (tracks && tracks.length > 0) break;
+                                  }
+                                } catch (_) {}
+                              }
+                              await sleep(600);
+                            }
+
+                            if (!tracks || tracks.length === 0) {
+                              const ccBtn = document.querySelector('.ytp-subtitles-button');
+                              if (ccBtn) {
+                                ccBtn.click();
+                                await sleep(2500);
+                              }
+                              AndroidBridge.onFail("زیرنویسی برای این ویدئو یافت نشد (" + document.title.slice(0, 20) + ")");
+                              return;
+                            }
+
+                            AndroidBridge.onStatus("در حال دریافت فایل زیرنویس...");
                             let tr = tracks.find(t => t.languageCode && t.languageCode.startsWith("en")) || tracks[0];
-                            let u = tr.baseUrl + (tr.baseUrl.includes("fmt=") ? "" : "&fmt=json3");
-                            const resp = await fetch(u);
-                            const txt = await resp.text();
+                            let uJson = tr.baseUrl + (tr.baseUrl.includes("fmt=") ? "" : "&fmt=json3");
+                            let resp = await fetch(uJson);
+                            let txt = await resp.text();
+                            if (!txt || txt.length < 20) {
+                              resp = await fetch(tr.baseUrl);
+                              txt = await resp.text();
+                            }
                             if (txt && txt.length > 20) {
                               AndroidBridge.onRawCaptions(txt);
                             } else {
-                              const btn = document.querySelector('.ytp-subtitles-button, button[aria-label*="Subtitles"], button[aria-label*="Captions"]');
-                              if (btn) btn.click();
-                              else AndroidBridge.onFail("دکمه زیرنویس در پلیر پیدا نشد.");
+                              AndroidBridge.onFail("فایل زیرنویس خالی دریافت شد.");
                             }
                           } catch (e) {
                             AndroidBridge.onFail("خطا: " + e.message);
@@ -365,7 +416,7 @@ class OverlayService : Service() {
                     view?.evaluateJavascript(js, null)
                 }
             }
-            wv.loadUrl("https://m.youtube.com/watch?v=$videoId")
+            wv.loadUrl("https://www.youtube.com/watch?v=$videoId&hl=en")
         }
     }
 
@@ -430,7 +481,12 @@ class OverlayService : Service() {
     }
 
     private fun destroyWebView() {
-        hiddenWebView?.apply { stopLoading(); loadUrl("about:blank"); destroy() }
+        hiddenWebView?.let {
+            runCatching { windowManager.removeView(it) }
+            it.stopLoading()
+            it.loadUrl("about:blank")
+            it.destroy()
+        }
         hiddenWebView = null
     }
 
