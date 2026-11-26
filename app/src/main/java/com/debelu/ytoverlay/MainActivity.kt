@@ -5,6 +5,7 @@ import android.annotation.SuppressLint
 import android.app.*
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
 import android.graphics.PixelFormat
 import android.graphics.drawable.GradientDrawable
 import android.net.Uri
@@ -23,6 +24,7 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.regex.Pattern
 
 class MainActivity : Activity() {
@@ -249,7 +251,7 @@ class OverlayService : Service() {
     private lateinit var playPauseBtn: Button
 
     private var hiddenWebView: WebView? = null
-    @Volatile private var captionHandled = false
+    private val captionHandled = AtomicBoolean(false)
 
     private val client = OkHttpClient.Builder()
         .connectTimeout(20, TimeUnit.SECONDS)
@@ -300,7 +302,7 @@ class OverlayService : Service() {
 
         isPlaying = false
         currentTimeMs = 0L
-        captionHandled = false
+        captionHandled.set(false)
         subTextView.text = "در حال اتصال به یوتیوب..."
         loadCaptionsViaWebView(videoId)
         return START_NOT_STICKY
@@ -359,7 +361,7 @@ class OverlayService : Service() {
         val loggedIn = cookieStr.contains("SID=") || cookieStr.contains("SAPISID=") || cookieStr.contains("LOGIN_INFO=")
         if (loggedIn) {
             uiHandler.post {
-                subTextView.text = "در حال دریافت زیرنویس با حساب شما..."
+                subTextView.text = "در حال دریافت زیرنویس از پلیر یوتیوب..."
                 startWebViewFallback(videoId, "LOGGED_IN")
             }
             return
@@ -369,13 +371,11 @@ class OverlayService : Service() {
             withContext(Dispatchers.Main) { subTextView.text = "در حال دریافت زیرنویس..." }
             val (apiBody, apiStatus) = fetchCaptionsFromClients(videoId)
             if (!apiBody.isNullOrEmpty()) {
-                captionHandled = true
-                withContext(Dispatchers.Main) { subTextView.text = "در حال ترجمه زیرنویس به فارسی..." }
-                processAndTranslateBody(apiBody)
+                onCaptionCaptured(apiBody)
                 return@launch
             }
             withContext(Dispatchers.Main) {
-                subTextView.text = "تلاش با مرورگر داخلی..."
+                subTextView.text = "تلاش با پلیر داخلی..."
                 startWebViewFallback(videoId, apiStatus)
             }
         }
@@ -441,14 +441,24 @@ class OverlayService : Service() {
         return Pair(null, lastStatus)
     }
 
+    private fun onCaptionCaptured(rawBody: String) {
+        if (!captionHandled.compareAndSet(false, true)) return
+        uiHandler.post {
+            destroyWebView()
+            subTextView.text = "در حال ترجمه زیرنویس به فارسی..."
+        }
+        processAndTranslateBody(rawBody)
+    }
+
     @SuppressLint("SetJavaScriptEnabled")
     private fun startWebViewFallback(videoId: String, apiStatus: String) {
         destroyWebView()
         val wv = WebView(this)
         hiddenWebView = wv
+        wv.alpha = 0f
         wv.settings.javaScriptEnabled = true
         wv.settings.domStorageEnabled = true
-        wv.settings.mediaPlaybackRequiresUserGesture = true
+        wv.settings.mediaPlaybackRequiresUserGesture = false
         wv.settings.userAgentString = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
         CookieManager.getInstance().setAcceptCookie(true)
         CookieManager.getInstance().setAcceptThirdPartyCookies(wv, true)
@@ -456,7 +466,7 @@ class OverlayService : Service() {
         try {
             val flag = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY else @Suppress("DEPRECATION") WindowManager.LayoutParams.TYPE_PHONE
             val p = WindowManager.LayoutParams(
-                1, 1, flag,
+                360, 240, flag,
                 WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE,
                 PixelFormat.TRANSLUCENT
             ).apply { gravity = Gravity.TOP or Gravity.START }
@@ -465,73 +475,131 @@ class OverlayService : Service() {
 
         wv.addJavascriptInterface(object {
             @JavascriptInterface
-            fun onCaptionUrl(rawUrl: String) {
-                if (captionHandled) return
-                captionHandled = true
-                val fullUrl = if (rawUrl.startsWith("http")) rawUrl else "https://www.youtube.com$rawUrl"
-                val cookies = CookieManager.getInstance().getCookie("https://www.youtube.com") ?: ""
-                uiHandler.post { destroyWebView(); subTextView.text = "در حال دانلود و ترجمه زیرنویس..." }
-                serviceScope.launch {
-                    try {
-                        val ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
-                        val jsonUrl = if (fullUrl.contains("fmt=")) fullUrl else "$fullUrl&fmt=json3"
-                        val r1 = Request.Builder().url(jsonUrl).header("Cookie", cookies).header("User-Agent", ua).header("Referer", "https://www.youtube.com/").build()
-                        var body = client.newCall(r1).execute().body?.string() ?: ""
-                        if (body.length < 20) {
-                            val r2 = Request.Builder().url(fullUrl).header("Cookie", cookies).header("User-Agent", ua).header("Referer", "https://www.youtube.com/").build()
-                            body = client.newCall(r2).execute().body?.string() ?: ""
-                        }
-                        if (body.length >= 20) {
-                            processAndTranslateBody(body)
-                        } else {
-                            withContext(Dispatchers.Main) { subTextView.text = "فایل زیرنویس خالی برگشت" }
-                        }
-                    } catch (e: Exception) {
-                        withContext(Dispatchers.Main) { subTextView.text = "خطای دانلود: ${e.message}" }
-                    }
-                }
+            fun onRawCaptions(rawBody: String) {
+                if (rawBody.length >= 20) onCaptionCaptured(rawBody)
             }
 
             @JavascriptInterface
             fun onFail(msg: String) {
-                if (captionHandled) return
-                captionHandled = true
+                if (!captionHandled.compareAndSet(false, true)) return
                 uiHandler.post { destroyWebView(); subTextView.text = "$msg | $apiStatus" }
             }
         }, "AndroidBridge")
 
+        val hookJs = """
+            (function() {
+              if (window.__subHooked) return;
+              window.__subHooked = true;
+              const origOpen = XMLHttpRequest.prototype.open;
+              XMLHttpRequest.prototype.open = function(m, u) {
+                this.__u = u ? u.toString() : '';
+                return origOpen.apply(this, arguments);
+              };
+              const origSend = XMLHttpRequest.prototype.send;
+              XMLHttpRequest.prototype.send = function() {
+                if (this.__u && this.__u.includes('/api/timedtext')) {
+                  this.addEventListener('load', function() {
+                    try {
+                      let txt = '';
+                      if (!this.responseType || this.responseType === 'text') {
+                        txt = this.responseText || '';
+                      } else if (this.responseType === 'arraybuffer' && this.response) {
+                        txt = new TextDecoder('utf-8').decode(this.response);
+                      } else if (this.responseType === 'json' && this.response) {
+                        txt = JSON.stringify(this.response);
+                      } else if (this.responseType === 'document' && this.response) {
+                        txt = new XMLSerializer().serializeToString(this.response);
+                      }
+                      if (txt && txt.length >= 20) AndroidBridge.onRawCaptions(txt);
+                    } catch(_) {}
+                  });
+                }
+                return origSend.apply(this, arguments);
+              };
+              const origFetch = window.fetch;
+              window.fetch = async function() {
+                const res = await origFetch.apply(this, arguments);
+                try {
+                  const a = arguments[0];
+                  const u = (typeof a === 'string') ? a : (a && a.url ? a.url : '');
+                  if (u.includes('/api/timedtext')) {
+                    const txt = await res.clone().text();
+                    if (txt && txt.length >= 20) AndroidBridge.onRawCaptions(txt);
+                  }
+                } catch(_) {}
+                return res;
+              };
+            })();
+        """.trimIndent()
+
         wv.webViewClient = object : WebViewClient() {
+            override fun shouldInterceptRequest(view: WebView?, request: WebResourceRequest?): WebResourceResponse? {
+                val reqUrl = request?.url?.toString()
+                if (reqUrl != null && reqUrl.contains("/api/timedtext") && !captionHandled.get()) {
+                    val reqHeaders = request.requestHeaders?.toMap() ?: emptyMap()
+                    val cookies = CookieManager.getInstance().getCookie(reqUrl) ?: ""
+                    serviceScope.launch {
+                        delay(1500)
+                        if (captionHandled.get()) return@launch
+                        try {
+                            val rb = Request.Builder().url(reqUrl)
+                            reqHeaders.forEach { (k, v) -> rb.header(k, v) }
+                            if (cookies.isNotEmpty()) rb.header("Cookie", cookies)
+                            val body = client.newCall(rb.build()).execute().body?.string() ?: ""
+                            if (body.length >= 20) onCaptionCaptured(body)
+                        } catch (_: Exception) { }
+                    }
+                }
+                return super.shouldInterceptRequest(view, request)
+            }
+
+            override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
+                super.onPageStarted(view, url, favicon)
+                view?.evaluateJavascript(hookJs, null)
+            }
+
             override fun onPageFinished(view: WebView?, url: String?) {
                 super.onPageFinished(view, url)
-                val js = """
+                view?.evaluateJavascript(hookJs, null)
+                val triggerJs = """
                     (async function() {
-                      try {
-                        const sleep = ms => new Promise(r => setTimeout(r, ms));
-                        let pr = null;
-                        for (let i = 0; i < 12; i++) {
-                          document.querySelectorAll('video').forEach(v => { v.muted = true; v.pause(); });
-                          const mp = document.getElementById('movie_player');
-                          pr = (mp && mp.getPlayerResponse) ? mp.getPlayerResponse() : window.ytInitialPlayerResponse;
-                          if (pr?.captions?.playerCaptionsTracklistRenderer?.captionTracks?.length) break;
-                          await sleep(500);
+                      const sleep = ms => new Promise(r => setTimeout(r, ms));
+                      for (let i = 0; i < 24; i++) {
+                        document.querySelectorAll('video').forEach(v => {
+                          v.muted = true;
+                          v.volume = 0;
+                          if (v.paused) v.play().catch(()=>{});
+                        });
+                        const mp = document.getElementById('movie_player');
+                        if (mp) {
+                          try {
+                            if (mp.mute) mp.mute();
+                            if (i === 4 && mp.unloadModule) {
+                              mp.unloadModule('captions');
+                              await sleep(350);
+                            }
+                            if (mp.loadModule) mp.loadModule('captions');
+                            let tracks = mp.getOption ? mp.getOption('captions', 'tracklist') : null;
+                            if (tracks && tracks.length > 0) {
+                              let target = tracks.find(t => t.languageCode && t.languageCode.startsWith('en')) || tracks[0];
+                              mp.setOption('captions', 'track', target);
+                              mp.setOption('captions', 'reload', true);
+                            }
+                          } catch(_) {}
                         }
-                        const tracks = pr?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
-                        if (!tracks || !tracks.length) {
-                          const st = pr?.playabilityStatus?.status || "NO_PR";
-                          AndroidBridge.onFail("زیرنویس یافت نشد (" + st + ")");
-                          return;
+                        const btn = document.querySelector('.ytp-subtitles-button, button[aria-label*="Subtitles"], button[aria-label*="Captions"]');
+                        if (btn && btn.getAttribute('aria-pressed') !== 'true') {
+                          btn.click();
                         }
-                        let tr = tracks.find(t => t.languageCode && t.languageCode.startsWith("en")) || tracks[0];
-                        AndroidBridge.onCaptionUrl(tr.baseUrl);
-                      } catch (e) {
-                        AndroidBridge.onFail("خطا: " + e.message);
+                        await sleep(750);
                       }
+                      AndroidBridge.onFail("پلیر زیرنویس را ارسال نکرد");
                     })();
                 """.trimIndent()
-                view?.evaluateJavascript(js, null)
+                view?.evaluateJavascript(triggerJs, null)
             }
         }
-        wv.loadUrl("https://www.youtube.com/watch?v=$videoId&hl=en")
+        wv.loadUrl("https://www.youtube.com/watch?v=$videoId&hl=en&app=desktop&persist_app=1")
     }
 
     private fun processAndTranslateBody(body: String) {
@@ -561,6 +629,38 @@ class OverlayService : Service() {
                         val decoded = Html.fromHtml(m.group(3) ?: "", Html.FROM_HTML_MODE_LEGACY).toString().replace("\n", " ").trim()
                         if (decoded.isNotEmpty()) raw.add(Triple(st, st + dur, decoded))
                     }
+                } else if (body.contains("<p ")) {
+                    val m = Pattern.compile("<p[^>]*\\bt=\"([0-9]+)\"(?:[^>]*\\bd=\"([0-9]+)\")?[^>]*>(.*?)</p>", Pattern.DOTALL).matcher(body)
+                    while (m.find()) {
+                        val st = m.group(1)?.toLongOrNull() ?: 0L
+                        val dur = m.group(2)?.toLongOrNull() ?: 2500L
+                        val decoded = Html.fromHtml(m.group(3) ?: "", Html.FROM_HTML_MODE_LEGACY).toString().replace("\n", " ").trim()
+                        if (decoded.isNotEmpty()) raw.add(Triple(st, st + dur, decoded))
+                    }
+                } else if (body.contains("-->")) {
+                    val lines = body.replace("\r", "").split("\n")
+                    var i = 0
+                    while (i < lines.size) {
+                        val line = lines[i].trim()
+                        if (line.contains("-->")) {
+                            val parts = line.split("-->")
+                            val st = parseVttTimeMs(parts[0].trim())
+                            val en = parseVttTimeMs(parts.getOrElse(1) { "" }.trim().split(" ")[0])
+                            val sb = StringBuilder()
+                            i++
+                            while (i < lines.size && lines[i].trim().isNotEmpty()) {
+                                val cleaned = lines[i].replace(Regex("<[^>]+>"), "").trim()
+                                if (cleaned.isNotEmpty()) {
+                                    if (sb.isNotEmpty()) sb.append(" ")
+                                    sb.append(cleaned)
+                                }
+                                i++
+                            }
+                            val txt = Html.fromHtml(sb.toString(), Html.FROM_HTML_MODE_LEGACY).toString().trim()
+                            if (txt.isNotEmpty()) raw.add(Triple(st, if (en > st) en else st + 2500L, txt))
+                        }
+                        i++
+                    }
                 }
             } catch (_: Exception) { }
 
@@ -570,10 +670,13 @@ class OverlayService : Service() {
             }
 
             val res = mutableListOf<SubLine>()
-            for (chunk in raw.chunked(15)) {
+            for (chunk in raw.chunked(25)) {
                 val tr = translateToFa(chunk.joinToString("\n") { it.third }).split("\n")
                 chunk.forEachIndexed { idx, line ->
                     res.add(SubLine(line.first, line.second, tr.getOrElse(idx) { line.third }))
+                }
+                withContext(Dispatchers.Main) {
+                    subTextView.text = "در حال ترجمه (${res.size}/${raw.size})..."
                 }
             }
             withContext(Dispatchers.Main) {
@@ -581,6 +684,17 @@ class OverlayService : Service() {
                 subTextView.text = "آماده! هم‌زمان با ویدئو ▶ را بزنید."
             }
         }
+    }
+
+    private fun parseVttTimeMs(t: String): Long {
+        return try {
+            val parts = t.replace(",", ".").split(":")
+            if (parts.size == 3) {
+                ((parts[0].toLong() * 3600 + parts[1].toLong() * 60) * 1000L) + (parts[2].toDouble() * 1000).toLong()
+            } else if (parts.size == 2) {
+                (parts[0].toLong() * 60 * 1000L) + (parts[1].toDouble() * 1000).toLong()
+            } else 0L
+        } catch (_: Exception) { 0L }
     }
 
     private fun translateToFa(text: String): String {
