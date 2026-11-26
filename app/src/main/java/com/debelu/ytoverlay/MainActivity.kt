@@ -153,21 +153,23 @@ class MainActivity : Activity() {
         (notifStatusBtn.background as GradientDrawable).setStroke(2, if (canNotif) 0xFF10B981.toInt() else 0xFF374151.toInt())
     }
 
-    private fun createCardButton(label: String, onClick: () -> Unit) = Button(this).apply {
-        text = label
-        textSize = 14f
-        isAllCaps = false
-        setTextColor(0xFFFFFFFF.toInt())
-        setPadding(32, 32, 32, 32)
-        background = GradientDrawable().apply {
-            setColor(0xFF141B19.toInt())
-            cornerRadius = 22f
-            setStroke(2, 0xFF374151.toInt())
+    private fun createCardButton(label: String, onClick: () -> Unit): Button {
+        return Button(this).apply {
+            text = label
+            textSize = 14f
+            isAllCaps = false
+            setTextColor(0xFFFFFFFF.toInt())
+            setPadding(32, 32, 32, 32)
+            background = GradientDrawable().apply {
+                setColor(0xFF141B19.toInt())
+                cornerRadius = 22f
+                setStroke(2, 0xFF374151.toInt())
+            }
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
+                setMargins(0, 0, 0, 20)
+            }
+            setOnClickListener { onClick() }
         }
-        layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
-            setMargins(0, 0, 0, 20)
-        }
-        setOnClickListener { onClick() }
     }
 
     private fun startOverlayWithUrl(url: String) {
@@ -232,14 +234,18 @@ class OverlayService : Service() {
             return START_NOT_STICKY
         }
 
-        isPlaying = false; currentTimeMs = 0L
+        isPlaying = false
+        currentTimeMs = 0L
         subTextView.text = "در حال دریافت و ترجمه زیرنویس..."
 
         serviceScope.launch {
             val loaded = fetchAndTranslateSubtitles(videoId)
             withContext(Dispatchers.Main) {
                 if (loaded.isEmpty()) subTextView.text = "زیرنویسی برای این ویدئو پیدا نشد."
-                else { subtitles = loaded; subTextView.text = "آماده! هم‌زمان با ویدئو ▶ را بزنید." }
+                else {
+                    subtitles = loaded
+                    subTextView.text = "آماده! هم‌زمان با ویدئو ▶ را بزنید."
+                }
             }
         }
         return START_NOT_STICKY
@@ -249,7 +255,8 @@ class OverlayService : Service() {
         windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
         val flag = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY else @Suppress("DEPRECATION") WindowManager.LayoutParams.TYPE_PHONE
         val params = WindowManager.LayoutParams(WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.WRAP_CONTENT, flag, WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE, PixelFormat.TRANSLUCENT).apply {
-            gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL; y = 220
+            gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
+            y = 220
         }
         overlayView = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -268,7 +275,8 @@ class OverlayService : Service() {
         overlayView.addView(row); overlayView.addView(subTextView)
 
         overlayView.setOnTouchListener(object : View.OnTouchListener {
-            var initY = 0; var touchY = 0f
+            var initY = 0
+            var touchY = 0f
             override fun onTouch(v: View?, e: MotionEvent): Boolean {
                 if (e.action == MotionEvent.ACTION_DOWN) { initY = params.y; touchY = e.rawY; return true }
                 if (e.action == MotionEvent.ACTION_MOVE) { params.y = initY + (e.rawY - touchY).toInt(); windowManager.updateViewLayout(overlayView, params); return true }
@@ -278,10 +286,16 @@ class OverlayService : Service() {
         windowManager.addView(overlayView, params)
     }
 
-    private fun miniBtn(label: String, onClick: () -> Unit) = Button(this).apply {
-        text = label; textSize = 11f; setTextColor(0xFFFFFFFF.toInt()); setBackgroundColor(0xFF1F2937.toInt())
-        setPadding(16, 4, 16, 4); layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, 84).apply { setMargins(6, 0, 6, 0) }
-        setOnClickListener { onClick() }
+    private fun miniBtn(label: String, onClick: () -> Unit): Button {
+        return Button(this).apply {
+            text = label
+            textSize = 11f
+            setTextColor(0xFFFFFFFF.toInt())
+            setBackgroundColor(0xFF1F2937.toInt())
+            setPadding(16, 4, 16, 4)
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, 84).apply { setMargins(6, 0, 6, 0) }
+            setOnClickListener { onClick() }
+        }
     }
 
     private fun updateSubtitleUI() {
@@ -290,49 +304,64 @@ class OverlayService : Service() {
         subtitles.find { currentTimeMs in it.startMs..it.endMs }?.let { subTextView.text = it.textFa }
     }
 
-    private fun fetchAndTranslateSubtitles(videoId: String): List<SubLine> = try {
-        val payload = """{"context":{"client":{"clientName":"ANDROID","clientVersion":"19.09.37","androidSdkVersion":30}},"videoId":"$videoId"}"""
-        val req = Request.Builder()
-            .url("https://www.youtube.com/youtubei/v1/player?prettyPrint=false")
-            .header("User-Agent", "com.google.android.youtube/19.09.37 (Linux; U; Android 11) gzip")
-            .post(payload.toRequestBody("application/json".toMediaType()))
-            .build()
-        val jsonStr = client.newCall(req).execute().body?.string() ?: return emptyList()
-        val tracks = JSONObject(jsonStr)
-            .getJSONObject("captions")
-            .getJSONObject("playerCaptionsTracklistRenderer")
-            .getJSONArray("captionTracks")
-        if (tracks.length() == 0) return emptyList()
+    private fun fetchAndTranslateSubtitles(videoId: String): List<SubLine> {
+        return try {
+            val payload = """{"context":{"client":{"clientName":"ANDROID","clientVersion":"19.09.37","androidSdkVersion":30}},"videoId":"$videoId"}"""
+            val req = Request.Builder()
+                .url("https://www.youtube.com/youtubei/v1/player?prettyPrint=false")
+                .header("User-Agent", "com.google.android.youtube/19.09.37 (Linux; U; Android 11) gzip")
+                .post(payload.toRequestBody("application/json".toMediaType()))
+                .build()
+            val jsonStr = client.newCall(req).execute().body?.string() ?: return emptyList()
+            val tracks = JSONObject(jsonStr)
+                .getJSONObject("captions")
+                .getJSONObject("playerCaptionsTracklistRenderer")
+                .getJSONArray("captionTracks")
+            if (tracks.length() == 0) return emptyList()
 
-        val baseUrl = tracks.getJSONObject(0).getString("baseUrl") + "&fmt=json3"
-        val subJson = client.newCall(Request.Builder().url(baseUrl).build()).execute().body?.string() ?: return emptyList()
-        val events = JSONObject(subJson).getJSONArray("events")
-        val raw = mutableListOf<Triple<Long, Long, String>>()
-        for (i in 0 until events.length()) {
-            val ev = events.getJSONObject(i)
-            if (!ev.has("segs")) continue
-            val st = ev.optLong("tStartMs", 0L); val dur = ev.optLong("dDurationMs", 2500L)
-            val segs = ev.getJSONArray("segs"); val sb = StringBuilder()
-            for (j in 0 until segs.length()) sb.append(segs.getJSONObject(j).optString("utf8", ""))
-            val txt = sb.toString().replace("\n", " ").trim()
-            if (txt.isNotEmpty()) raw.add(Triple(st, st + dur, txt))
+            val baseUrl = tracks.getJSONObject(0).getString("baseUrl") + "&fmt=json3"
+            val subJson = client.newCall(Request.Builder().url(baseUrl).build()).execute().body?.string() ?: return emptyList()
+            val events = JSONObject(subJson).getJSONArray("events")
+            val raw = mutableListOf<Triple<Long, Long, String>>()
+            for (i in 0 until events.length()) {
+                val ev = events.getJSONObject(i)
+                if (!ev.has("segs")) continue
+                val st = ev.optLong("tStartMs", 0L)
+                val dur = ev.optLong("dDurationMs", 2500L)
+                val segs = ev.getJSONArray("segs")
+                val sb = StringBuilder()
+                for (j in 0 until segs.length()) sb.append(segs.getJSONObject(j).optString("utf8", ""))
+                val txt = sb.toString().replace("\n", " ").trim()
+                if (txt.isNotEmpty()) raw.add(Triple(st, st + dur, txt))
+            }
+            val res = mutableListOf<SubLine>()
+            for (chunk in raw.chunked(15)) {
+                val tr = translateToFa(chunk.joinToString("\n") { it.third }).split("\n")
+                chunk.forEachIndexed { idx, line ->
+                    res.add(SubLine(line.first, line.second, tr.getOrElse(idx) { line.third }))
+                }
+            }
+            res
+        } catch (e: Exception) {
+            emptyList()
         }
-        val res = mutableListOf<SubLine>()
-        for (chunk in raw.chunked(15)) {
-            val tr = translateToFa(chunk.joinToString("\n") { it.third }).split("\n")
-            chunk.forEachIndexed { i, it -> res.add(SubLine(it.first, it.second, tr.getOrElse(i) { it.third })) }
-        }
-        res
-    } catch (e: Exception) { emptyList() }
+    }
 
-    private fun translateToFa(text: String): String = try {
-        val url = "https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=fa&dt=t&q=${URLEncoder.encode(text, "UTF-8")}"
-        val arr = JSONArray(client.newCall(Request.Builder().url(url).build()).execute().body?.string() ?: return text).getJSONArray(0)
-        buildString { for (i in 0 until arr.length()) append(arr.getJSONArray(i).getString(0)) }
-    } catch (e: Exception) { text }
+    private fun translateToFa(text: String): String {
+        return try {
+            val url = "https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=fa&dt=t&q=${URLEncoder.encode(text, "UTF-8")}"
+            val body = client.newCall(Request.Builder().url(url).build()).execute().body?.string() ?: return text
+            val arr = JSONArray(body).getJSONArray(0)
+            buildString { for (i in 0 until arr.length()) append(arr.getJSONArray(i).getString(0)) }
+        } catch (e: Exception) {
+            text
+        }
+    }
 
     override fun onDestroy() {
-        super.onDestroy(); uiHandler.removeCallbacks(ticker); serviceScope.cancel()
+        super.onDestroy()
+        uiHandler.removeCallbacks(ticker)
+        serviceScope.cancel()
         if (::overlayView.isInitialized) windowManager.removeView(overlayView)
     }
 }
