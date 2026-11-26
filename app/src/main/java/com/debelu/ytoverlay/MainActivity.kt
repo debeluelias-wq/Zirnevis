@@ -9,6 +9,7 @@ import android.graphics.drawable.GradientDrawable
 import android.net.Uri
 import android.os.*
 import android.provider.Settings
+import android.text.Html
 import android.view.*
 import android.widget.*
 import kotlinx.coroutines.*
@@ -19,6 +20,7 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
 import java.net.URLEncoder
+import java.util.concurrent.TimeUnit
 import java.util.regex.Pattern
 
 class MainActivity : Activity() {
@@ -181,7 +183,6 @@ class MainActivity : Activity() {
         }
     }
 }
-
 data class SubLine(val startMs: Long, val endMs: Long, val textFa: String)
 
 class OverlayService : Service() {
@@ -191,7 +192,12 @@ class OverlayService : Service() {
     private lateinit var statusTextView: TextView
     private lateinit var playPauseBtn: Button
 
-    private val client = OkHttpClient()
+    private val client = OkHttpClient.Builder()
+        .connectTimeout(20, TimeUnit.SECONDS)
+        .readTimeout(20, TimeUnit.SECONDS)
+        .build()
+
+    private val webUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
     private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private val uiHandler = Handler(Looper.getMainLooper())
     private var subtitles: List<SubLine> = emptyList()
@@ -239,11 +245,12 @@ class OverlayService : Service() {
         subTextView.text = "در حال دریافت و ترجمه زیرنویس..."
 
         serviceScope.launch {
-            val loaded = fetchAndTranslateSubtitles(videoId)
+            val result = fetchAndTranslateSubtitles(videoId)
             withContext(Dispatchers.Main) {
-                if (loaded.isEmpty()) subTextView.text = "زیرنویسی برای این ویدئو پیدا نشد."
-                else {
-                    subtitles = loaded
+                if (result.first.isEmpty()) {
+                    subTextView.text = result.second ?: "زیرنویسی برای این ویدئو پیدا نشد."
+                } else {
+                    subtitles = result.first
                     subTextView.text = "آماده! هم‌زمان با ویدئو ▶ را بزنید."
                 }
             }
@@ -303,37 +310,27 @@ class OverlayService : Service() {
         statusTextView.text = String.format("⠿ %02d:%02d", sec / 60, sec % 60)
         subtitles.find { currentTimeMs in it.startMs..it.endMs }?.let { subTextView.text = it.textFa }
     }
-
-    private fun fetchAndTranslateSubtitles(videoId: String): List<SubLine> {
+        private fun fetchAndTranslateSubtitles(videoId: String): Pair<List<SubLine>, String?> {
         return try {
-            val payload = """{"context":{"client":{"clientName":"ANDROID","clientVersion":"19.09.37","androidSdkVersion":30}},"videoId":"$videoId"}"""
-            val req = Request.Builder()
-                .url("https://www.youtube.com/youtubei/v1/player?prettyPrint=false")
-                .header("User-Agent", "com.google.android.youtube/19.09.37 (Linux; U; Android 11) gzip")
-                .post(payload.toRequestBody("application/json".toMediaType()))
-                .build()
-            val jsonStr = client.newCall(req).execute().body?.string() ?: return emptyList()
-            val tracks = JSONObject(jsonStr)
-                .getJSONObject("captions")
-                .getJSONObject("playerCaptionsTracklistRenderer")
-                .getJSONArray("captionTracks")
-            if (tracks.length() == 0) return emptyList()
-
-            val baseUrl = tracks.getJSONObject(0).getString("baseUrl") + "&fmt=json3"
-            val subJson = client.newCall(Request.Builder().url(baseUrl).build()).execute().body?.string() ?: return emptyList()
-            val events = JSONObject(subJson).getJSONArray("events")
-            val raw = mutableListOf<Triple<Long, Long, String>>()
-            for (i in 0 until events.length()) {
-                val ev = events.getJSONObject(i)
-                if (!ev.has("segs")) continue
-                val st = ev.optLong("tStartMs", 0L)
-                val dur = ev.optLong("dDurationMs", 2500L)
-                val segs = ev.getJSONArray("segs")
-                val sb = StringBuilder()
-                for (j in 0 until segs.length()) sb.append(segs.getJSONObject(j).optString("utf8", ""))
-                val txt = sb.toString().replace("\n", " ").trim()
-                if (txt.isNotEmpty()) raw.add(Triple(st, st + dur, txt))
+            val tracks = getCaptionTracksFromWeb(videoId) ?: getCaptionTracksFromVrApi(videoId)
+            if (tracks == null || tracks.length() == 0) {
+                return Pair(emptyList(), "زیرنویسی در اطلاعات این ویدئو یافت نشد.")
             }
+
+            var selectedUrl = tracks.getJSONObject(0).getString("baseUrl")
+            for (i in 0 until tracks.length()) {
+                val track = tracks.getJSONObject(i)
+                if (track.optString("languageCode").startsWith("en")) {
+                    selectedUrl = track.getString("baseUrl")
+                    break
+                }
+            }
+
+            val raw = downloadAndParseCaptions(selectedUrl)
+            if (raw.isEmpty()) {
+                return Pair(emptyList(), "فایل زیرنویس خالی بود یا مسدود شد.")
+            }
+
             val res = mutableListOf<SubLine>()
             for (chunk in raw.chunked(15)) {
                 val tr = translateToFa(chunk.joinToString("\n") { it.third }).split("\n")
@@ -341,10 +338,109 @@ class OverlayService : Service() {
                     res.add(SubLine(line.first, line.second, tr.getOrElse(idx) { line.third }))
                 }
             }
-            res
+            Pair(res, null)
         } catch (e: Exception) {
-            emptyList()
+            Pair(emptyList(), "خطای اتصال: ${e.message}")
         }
+    }
+
+    private fun getCaptionTracksFromWeb(videoId: String): JSONArray? {
+        return try {
+            val req = Request.Builder()
+                .url("https://www.youtube.com/watch?v=$videoId&hl=en")
+                .header("User-Agent", webUserAgent)
+                .header("Accept-Language", "en-US,en;q=0.9")
+                .header("Cookie", "CONSENT=YES+cb.20210328-17-p0.en+FX+417")
+                .build()
+            val html = client.newCall(req).execute().body?.string() ?: return null
+            val playerJson = extractJsonObject(html, "ytInitialPlayerResponse =") ?: return null
+            playerJson.optJSONObject("captions")
+                ?.optJSONObject("playerCaptionsTracklistRenderer")
+                ?.optJSONArray("captionTracks")
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    private fun getCaptionTracksFromVrApi(videoId: String): JSONArray? {
+        return try {
+            val payload = """{"context":{"client":{"clientName":"ANDROID_VR","clientVersion":"1.56.21","deviceMake":"Oculus","deviceModel":"Quest 3","osName":"Android","osVersion":"12L","androidSdkVersion":32}},"videoId":"$videoId"}"""
+            val req = Request.Builder()
+                .url("https://www.youtube.com/youtubei/v1/player?prettyPrint=false")
+                .header("User-Agent", "com.google.android.apps.youtube.vr.oculus/1.56.21 (Linux; U; Android 12L; Quest 3) gzip")
+                .post(payload.toRequestBody("application/json".toMediaType()))
+                .build()
+            val jsonStr = client.newCall(req).execute().body?.string() ?: return null
+            JSONObject(jsonStr).optJSONObject("captions")
+                ?.optJSONObject("playerCaptionsTracklistRenderer")
+                ?.optJSONArray("captionTracks")
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    private fun downloadAndParseCaptions(baseUrl: String): List<Triple<Long, Long, String>> {
+        val raw = mutableListOf<Triple<Long, Long, String>>()
+        try {
+            val jsonReq = Request.Builder().url("$baseUrl&fmt=json3").header("User-Agent", webUserAgent).build()
+            val subJson = client.newCall(jsonReq).execute().body?.string() ?: ""
+            if (subJson.trim().startsWith("{")) {
+                val events = JSONObject(subJson).optJSONArray("events")
+                if (events != null) {
+                    for (i in 0 until events.length()) {
+                        val ev = events.getJSONObject(i)
+                        if (!ev.has("segs")) continue
+                        val st = ev.optLong("tStartMs", 0L)
+                        val dur = ev.optLong("dDurationMs", 2500L)
+                        val segs = ev.getJSONArray("segs")
+                        val sb = StringBuilder()
+                        for (j in 0 until segs.length()) sb.append(segs.getJSONObject(j).optString("utf8", ""))
+                        val txt = sb.toString().replace("\n", " ").trim()
+                        if (txt.isNotEmpty()) raw.add(Triple(st, st + dur, txt))
+                    }
+                }
+            }
+        } catch (_: Exception) { }
+
+        if (raw.isNotEmpty()) return raw
+
+        try {
+            val xmlReq = Request.Builder().url(baseUrl).header("User-Agent", webUserAgent).build()
+            val xml = client.newCall(xmlReq).execute().body?.string() ?: return emptyList()
+            val m = Pattern.compile("<text start=\"([0-9.]+)\"(?: dur=\"([0-9.]+)\")?[^>]*>(.*?)</text>", Pattern.DOTALL).matcher(xml)
+            while (m.find()) {
+                val st = ((m.group(1)?.toDoubleOrNull() ?: 0.0) * 1000).toLong()
+                val dur = ((m.group(2)?.toDoubleOrNull() ?: 2.5) * 1000).toLong()
+                val decoded = Html.fromHtml(m.group(3) ?: "", Html.FROM_HTML_MODE_LEGACY).toString().replace("\n", " ").trim()
+                if (decoded.isNotEmpty()) raw.add(Triple(st, st + dur, decoded))
+            }
+        } catch (_: Exception) { }
+
+        return raw
+    }
+
+    private fun extractJsonObject(text: String, marker: String): JSONObject? {
+        val idx = text.indexOf(marker)
+        if (idx == -1) return null
+        val start = text.indexOf('{', idx + marker.length)
+        if (start == -1) return null
+        var depth = 0
+        var inString = false
+        var escape = false
+        for (i in start until text.length) {
+            val c = text[i]
+            if (escape) { escape = false; continue }
+            if (c == '\\' && inString) { escape = true; continue }
+            if (c == '"') { inString = !inString; continue }
+            if (!inString) {
+                if (c == '{') depth++
+                else if (c == '}') {
+                    depth--
+                    if (depth == 0) return JSONObject(text.substring(start, i + 1))
+                }
+            }
+        }
+        return null
     }
 
     private fun translateToFa(text: String): String {
