@@ -1,6 +1,7 @@
 package com.debelu.ytoverlay
 
 import android.Manifest
+import android.annotation.SuppressLint
 import android.app.*
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -11,12 +12,11 @@ import android.os.*
 import android.provider.Settings
 import android.text.Html
 import android.view.*
+import android.webkit.*
 import android.widget.*
 import kotlinx.coroutines.*
-import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
-import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
 import java.net.URLEncoder
@@ -128,14 +128,9 @@ class MainActivity : Activity() {
             setPadding(0, 36, 0, 0)
         }
 
-        layout.addView(title)
-        layout.addView(subtitle)
-        layout.addView(overlayStatusBtn)
-        layout.addView(notifStatusBtn)
-        layout.addView(divider)
-        layout.addView(urlInput)
-        layout.addView(startBtn)
-        layout.addView(guide)
+        layout.addView(title); layout.addView(subtitle); layout.addView(overlayStatusBtn)
+        layout.addView(notifStatusBtn); layout.addView(divider); layout.addView(urlInput)
+        layout.addView(startBtn); layout.addView(guide)
         root.addView(layout)
         setContentView(root)
     }
@@ -157,27 +152,17 @@ class MainActivity : Activity() {
 
     private fun createCardButton(label: String, onClick: () -> Unit): Button {
         return Button(this).apply {
-            text = label
-            textSize = 14f
-            isAllCaps = false
-            setTextColor(0xFFFFFFFF.toInt())
-            setPadding(32, 32, 32, 32)
-            background = GradientDrawable().apply {
-                setColor(0xFF141B19.toInt())
-                cornerRadius = 22f
-                setStroke(2, 0xFF374151.toInt())
-            }
-            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
-                setMargins(0, 0, 0, 20)
-            }
+            text = label; textSize = 14f; isAllCaps = false
+            setTextColor(0xFFFFFFFF.toInt()); setPadding(32, 32, 32, 32)
+            background = GradientDrawable().apply { setColor(0xFF141B19.toInt()); cornerRadius = 22f; setStroke(2, 0xFF374151.toInt()) }
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { setMargins(0, 0, 0, 20) }
             setOnClickListener { onClick() }
         }
     }
 
     private fun startOverlayWithUrl(url: String) {
         try {
-            val i = Intent(this, OverlayService::class.java).apply { putExtra("YOUTUBE_URL", url) }
-            startService(i)
+            startService(Intent(this, OverlayService::class.java).apply { putExtra("YOUTUBE_URL", url) })
         } catch (e: Exception) {
             Toast.makeText(this, "خطا: ${e.message}", Toast.LENGTH_LONG).show()
         }
@@ -192,12 +177,14 @@ class OverlayService : Service() {
     private lateinit var statusTextView: TextView
     private lateinit var playPauseBtn: Button
 
+    private var hiddenWebView: WebView? = null
+    private var captionHandled = false
+
     private val client = OkHttpClient.Builder()
         .connectTimeout(20, TimeUnit.SECONDS)
         .readTimeout(20, TimeUnit.SECONDS)
         .build()
 
-    private val webUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
     private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private val uiHandler = Handler(Looper.getMainLooper())
     private var subtitles: List<SubLine> = emptyList()
@@ -242,19 +229,9 @@ class OverlayService : Service() {
 
         isPlaying = false
         currentTimeMs = 0L
-        subTextView.text = "در حال دریافت و ترجمه زیرنویس..."
-
-        serviceScope.launch {
-            val result = fetchAndTranslateSubtitles(videoId)
-            withContext(Dispatchers.Main) {
-                if (result.first.isEmpty()) {
-                    subTextView.text = result.second ?: "زیرنویسی برای این ویدئو پیدا نشد."
-                } else {
-                    subtitles = result.first
-                    subTextView.text = "آماده! هم‌زمان با ویدئو ▶ را بزنید."
-                }
-            }
-        }
+        captionHandled = false
+        subTextView.text = "در حال اتصال به پلیر یوتیوب..."
+        loadCaptionsViaWebView(videoId)
         return START_NOT_STICKY
     }
 
@@ -282,8 +259,7 @@ class OverlayService : Service() {
         overlayView.addView(row); overlayView.addView(subTextView)
 
         overlayView.setOnTouchListener(object : View.OnTouchListener {
-            var initY = 0
-            var touchY = 0f
+            var initY = 0; var touchY = 0f
             override fun onTouch(v: View?, e: MotionEvent): Boolean {
                 if (e.action == MotionEvent.ACTION_DOWN) { initY = params.y; touchY = e.rawY; return true }
                 if (e.action == MotionEvent.ACTION_MOVE) { params.y = initY + (e.rawY - touchY).toInt(); windowManager.updateViewLayout(overlayView, params); return true }
@@ -295,12 +271,8 @@ class OverlayService : Service() {
 
     private fun miniBtn(label: String, onClick: () -> Unit): Button {
         return Button(this).apply {
-            text = label
-            textSize = 11f
-            setTextColor(0xFFFFFFFF.toInt())
-            setBackgroundColor(0xFF1F2937.toInt())
-            setPadding(16, 4, 16, 4)
-            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, 84).apply { setMargins(6, 0, 6, 0) }
+            text = label; textSize = 11f; setTextColor(0xFFFFFFFF.toInt()); setBackgroundColor(0xFF1F2937.toInt())
+            setPadding(16, 4, 16, 4); layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, 84).apply { setMargins(6, 0, 6, 0) }
             setOnClickListener { onClick() }
         }
     }
@@ -310,25 +282,126 @@ class OverlayService : Service() {
         statusTextView.text = String.format("⠿ %02d:%02d", sec / 60, sec % 60)
         subtitles.find { currentTimeMs in it.startMs..it.endMs }?.let { subTextView.text = it.textFa }
     }
-        private fun fetchAndTranslateSubtitles(videoId: String): Pair<List<SubLine>, String?> {
-        return try {
-            val tracks = getCaptionTracksFromWeb(videoId) ?: getCaptionTracksFromVrApi(videoId)
-            if (tracks == null || tracks.length() == 0) {
-                return Pair(emptyList(), "زیرنویسی در اطلاعات این ویدئو یافت نشد.")
-            }
+        @SuppressLint("SetJavaScriptEnabled")
+    private fun loadCaptionsViaWebView(videoId: String) {
+        uiHandler.post {
+            destroyWebView()
+            val wv = WebView(this)
+            hiddenWebView = wv
+            wv.settings.javaScriptEnabled = true
+            wv.settings.domStorageEnabled = true
+            wv.settings.mediaPlaybackRequiresUserGesture = true
+            wv.settings.userAgentString = "Mozilla/5.0 (Linux; Android 13; SM-S711B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36"
 
-            var selectedUrl = tracks.getJSONObject(0).getString("baseUrl")
-            for (i in 0 until tracks.length()) {
-                val track = tracks.getJSONObject(i)
-                if (track.optString("languageCode").startsWith("en")) {
-                    selectedUrl = track.getString("baseUrl")
-                    break
+            wv.addJavascriptInterface(object {
+                @JavascriptInterface
+                fun onRawCaptions(rawBody: String) {
+                    if (captionHandled) return
+                    captionHandled = true
+                    uiHandler.post { destroyWebView(); subTextView.text = "در حال ترجمه زیرنویس به فارسی..." }
+                    processAndTranslateBody(rawBody)
+                }
+
+                @JavascriptInterface
+                fun onFail(msg: String) {
+                    if (captionHandled) return
+                    captionHandled = true
+                    uiHandler.post { destroyWebView(); subTextView.text = msg }
+                }
+            }, "AndroidBridge")
+
+            wv.webViewClient = object : WebViewClient() {
+                override fun shouldInterceptRequest(view: WebView?, request: WebResourceRequest?): WebResourceResponse? {
+                    val reqUrl = request?.url?.toString() ?: return null
+                    if (!captionHandled && reqUrl.contains("/api/timedtext")) {
+                        captionHandled = true
+                        val cookies = CookieManager.getInstance().getCookie(reqUrl) ?: ""
+                        uiHandler.post { destroyWebView(); subTextView.text = "در حال ترجمه زیرنویس به فارسی..." }
+                        serviceScope.launch {
+                            try {
+                                val r = Request.Builder().url(reqUrl).header("Cookie", cookies).build()
+                                val body = client.newCall(r).execute().body?.string() ?: ""
+                                processAndTranslateBody(body)
+                            } catch (e: Exception) {
+                                withContext(Dispatchers.Main) { subTextView.text = "خطای دانلود: ${e.message}" }
+                            }
+                        }
+                    }
+                    return super.shouldInterceptRequest(view, request)
+                }
+
+                override fun onPageFinished(view: WebView?, url: String?) {
+                    super.onPageFinished(view, url)
+                    val js = """
+                        (async function() {
+                          try {
+                            document.querySelectorAll('video').forEach(v => { v.muted = true; v.pause(); });
+                            let pr = window.ytInitialPlayerResponse;
+                            if (!pr) {
+                              const m = document.documentElement.innerHTML.match(/ytInitialPlayerResponse\s*=\s*(\{.+?\});/);
+                              if (m) pr = JSON.parse(m[1]);
+                            }
+                            const tracks = pr?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
+                            if (!tracks || tracks.length === 0) {
+                              AndroidBridge.onFail("این ویدئو زیرنویس ندارد.");
+                              return;
+                            }
+                            let tr = tracks.find(t => t.languageCode && t.languageCode.startsWith("en")) || tracks[0];
+                            let u = tr.baseUrl + (tr.baseUrl.includes("fmt=") ? "" : "&fmt=json3");
+                            const resp = await fetch(u);
+                            const txt = await resp.text();
+                            if (txt && txt.length > 20) {
+                              AndroidBridge.onRawCaptions(txt);
+                            } else {
+                              const btn = document.querySelector('.ytp-subtitles-button, button[aria-label*="Subtitles"], button[aria-label*="Captions"]');
+                              if (btn) btn.click();
+                              else AndroidBridge.onFail("دکمه زیرنویس در پلیر پیدا نشد.");
+                            }
+                          } catch (e) {
+                            AndroidBridge.onFail("خطا: " + e.message);
+                          }
+                        })();
+                    """.trimIndent()
+                    view?.evaluateJavascript(js, null)
                 }
             }
+            wv.loadUrl("https://m.youtube.com/watch?v=$videoId")
+        }
+    }
 
-            val raw = downloadAndParseCaptions(selectedUrl)
+    private fun processAndTranslateBody(body: String) {
+        serviceScope.launch {
+            val raw = mutableListOf<Triple<Long, Long, String>>()
+            try {
+                if (body.trim().startsWith("{")) {
+                    val events = JSONObject(body).optJSONArray("events")
+                    if (events != null) {
+                        for (i in 0 until events.length()) {
+                            val ev = events.getJSONObject(i)
+                            if (!ev.has("segs")) continue
+                            val st = ev.optLong("tStartMs", 0L)
+                            val dur = ev.optLong("dDurationMs", 2500L)
+                            val segs = ev.getJSONArray("segs")
+                            val sb = StringBuilder()
+                            for (j in 0 until segs.length()) sb.append(segs.getJSONObject(j).optString("utf8", ""))
+                            val txt = sb.toString().replace("\n", " ").trim()
+                            if (txt.isNotEmpty()) raw.add(Triple(st, st + dur, txt))
+                        }
+                    }
+                } else if (body.contains("<text")) {
+                    val m = Pattern.compile("<text start=\"([0-9.]+)\"(?: dur=\"([0-9.]+)\")?[^>]*>(.*?)</text>", Pattern.DOTALL).matcher(body)
+                    while (m.find()) {
+                        val st = ((m.group(1)?.toDoubleOrNull() ?: 0.0) * 1000).toLong()
+                        val dur = ((m.group(2)?.toDoubleOrNull() ?: 2.5) * 1000).toLong()
+                        val decoded = Html.fromHtml(m.group(3) ?: "", Html.FROM_HTML_MODE_LEGACY).toString().replace("\n", " ").trim()
+                        if (decoded.isNotEmpty()) raw.add(Triple(st, st + dur, decoded))
+                    }
+                }
+            } catch (_: Exception) { }
+
             if (raw.isEmpty()) {
-                return Pair(emptyList(), "فایل زیرنویس خالی بود یا مسدود شد.")
+                withContext(Dispatchers.Main) { subTextView.text = "متن زیرنویس قابل خواندن نبود." }
+                return@launch
             }
 
             val res = mutableListOf<SubLine>()
@@ -338,109 +411,11 @@ class OverlayService : Service() {
                     res.add(SubLine(line.first, line.second, tr.getOrElse(idx) { line.third }))
                 }
             }
-            Pair(res, null)
-        } catch (e: Exception) {
-            Pair(emptyList(), "خطای اتصال: ${e.message}")
-        }
-    }
-
-    private fun getCaptionTracksFromWeb(videoId: String): JSONArray? {
-        return try {
-            val req = Request.Builder()
-                .url("https://www.youtube.com/watch?v=$videoId&hl=en")
-                .header("User-Agent", webUserAgent)
-                .header("Accept-Language", "en-US,en;q=0.9")
-                .header("Cookie", "CONSENT=YES+cb.20210328-17-p0.en+FX+417")
-                .build()
-            val html = client.newCall(req).execute().body?.string() ?: return null
-            val playerJson = extractJsonObject(html, "ytInitialPlayerResponse =") ?: return null
-            playerJson.optJSONObject("captions")
-                ?.optJSONObject("playerCaptionsTracklistRenderer")
-                ?.optJSONArray("captionTracks")
-        } catch (e: Exception) {
-            null
-        }
-    }
-
-    private fun getCaptionTracksFromVrApi(videoId: String): JSONArray? {
-        return try {
-            val payload = """{"context":{"client":{"clientName":"ANDROID_VR","clientVersion":"1.56.21","deviceMake":"Oculus","deviceModel":"Quest 3","osName":"Android","osVersion":"12L","androidSdkVersion":32}},"videoId":"$videoId"}"""
-            val req = Request.Builder()
-                .url("https://www.youtube.com/youtubei/v1/player?prettyPrint=false")
-                .header("User-Agent", "com.google.android.apps.youtube.vr.oculus/1.56.21 (Linux; U; Android 12L; Quest 3) gzip")
-                .post(payload.toRequestBody("application/json".toMediaType()))
-                .build()
-            val jsonStr = client.newCall(req).execute().body?.string() ?: return null
-            JSONObject(jsonStr).optJSONObject("captions")
-                ?.optJSONObject("playerCaptionsTracklistRenderer")
-                ?.optJSONArray("captionTracks")
-        } catch (e: Exception) {
-            null
-        }
-    }
-
-    private fun downloadAndParseCaptions(baseUrl: String): List<Triple<Long, Long, String>> {
-        val raw = mutableListOf<Triple<Long, Long, String>>()
-        try {
-            val jsonReq = Request.Builder().url("$baseUrl&fmt=json3").header("User-Agent", webUserAgent).build()
-            val subJson = client.newCall(jsonReq).execute().body?.string() ?: ""
-            if (subJson.trim().startsWith("{")) {
-                val events = JSONObject(subJson).optJSONArray("events")
-                if (events != null) {
-                    for (i in 0 until events.length()) {
-                        val ev = events.getJSONObject(i)
-                        if (!ev.has("segs")) continue
-                        val st = ev.optLong("tStartMs", 0L)
-                        val dur = ev.optLong("dDurationMs", 2500L)
-                        val segs = ev.getJSONArray("segs")
-                        val sb = StringBuilder()
-                        for (j in 0 until segs.length()) sb.append(segs.getJSONObject(j).optString("utf8", ""))
-                        val txt = sb.toString().replace("\n", " ").trim()
-                        if (txt.isNotEmpty()) raw.add(Triple(st, st + dur, txt))
-                    }
-                }
-            }
-        } catch (_: Exception) { }
-
-        if (raw.isNotEmpty()) return raw
-
-        try {
-            val xmlReq = Request.Builder().url(baseUrl).header("User-Agent", webUserAgent).build()
-            val xml = client.newCall(xmlReq).execute().body?.string() ?: return emptyList()
-            val m = Pattern.compile("<text start=\"([0-9.]+)\"(?: dur=\"([0-9.]+)\")?[^>]*>(.*?)</text>", Pattern.DOTALL).matcher(xml)
-            while (m.find()) {
-                val st = ((m.group(1)?.toDoubleOrNull() ?: 0.0) * 1000).toLong()
-                val dur = ((m.group(2)?.toDoubleOrNull() ?: 2.5) * 1000).toLong()
-                val decoded = Html.fromHtml(m.group(3) ?: "", Html.FROM_HTML_MODE_LEGACY).toString().replace("\n", " ").trim()
-                if (decoded.isNotEmpty()) raw.add(Triple(st, st + dur, decoded))
-            }
-        } catch (_: Exception) { }
-
-        return raw
-    }
-
-    private fun extractJsonObject(text: String, marker: String): JSONObject? {
-        val idx = text.indexOf(marker)
-        if (idx == -1) return null
-        val start = text.indexOf('{', idx + marker.length)
-        if (start == -1) return null
-        var depth = 0
-        var inString = false
-        var escape = false
-        for (i in start until text.length) {
-            val c = text[i]
-            if (escape) { escape = false; continue }
-            if (c == '\\' && inString) { escape = true; continue }
-            if (c == '"') { inString = !inString; continue }
-            if (!inString) {
-                if (c == '{') depth++
-                else if (c == '}') {
-                    depth--
-                    if (depth == 0) return JSONObject(text.substring(start, i + 1))
-                }
+            withContext(Dispatchers.Main) {
+                subtitles = res
+                subTextView.text = "آماده! هم‌زمان با ویدئو ▶ را بزنید."
             }
         }
-        return null
     }
 
     private fun translateToFa(text: String): String {
@@ -454,10 +429,16 @@ class OverlayService : Service() {
         }
     }
 
+    private fun destroyWebView() {
+        hiddenWebView?.apply { stopLoading(); loadUrl("about:blank"); destroy() }
+        hiddenWebView = null
+    }
+
     override fun onDestroy() {
         super.onDestroy()
         uiHandler.removeCallbacks(ticker)
         serviceScope.cancel()
+        destroyWebView()
         if (::overlayView.isInitialized) windowManager.removeView(overlayView)
     }
 }
