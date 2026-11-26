@@ -28,6 +28,7 @@ import java.util.regex.Pattern
 class MainActivity : Activity() {
     private lateinit var overlayStatusBtn: Button
     private lateinit var notifStatusBtn: Button
+    private lateinit var loginStatusBtn: Button
     private lateinit var urlInput: EditText
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -57,10 +58,10 @@ class MainActivity : Activity() {
         }
 
         val subtitle = TextView(this).apply {
-            text = "برای نمایش زیرنویس روی یوتیوب، مجوزهای زیر را فعال کنید:"
+            text = "مجوزها و اتصال حساب یوتیوب را فعال کنید:"
             textSize = 14f
             setTextColor(0xFF9CA3AF.toInt())
-            setPadding(0, 0, 0, 36)
+            setPadding(0, 0, 0, 32)
         }
 
         overlayStatusBtn = createCardButton("") {
@@ -79,11 +80,15 @@ class MainActivity : Activity() {
             }
         }
 
+        loginStatusBtn = createCardButton("") {
+            openYoutubeLogin()
+        }
+
         val divider = TextView(this).apply {
             text = "تست یا اجرای دستی با لینک یوتیوب"
             textSize = 14f
             setTextColor(0xFF10B981.toInt())
-            setPadding(0, 44, 0, 16)
+            setPadding(0, 36, 0, 16)
         }
 
         urlInput = EditText(this).apply {
@@ -113,7 +118,7 @@ class MainActivity : Activity() {
             setOnClickListener {
                 val url = urlInput.text.toString().trim()
                 if (!Settings.canDrawOverlays(this@MainActivity)) {
-                    Toast.makeText(this@MainActivity, "ابتدا مجوز اول (نمایش روی برنامه‌ها) را روشن کنید", Toast.LENGTH_LONG).show()
+                    Toast.makeText(this@MainActivity, "ابتدا مجوز اول را روشن کنید", Toast.LENGTH_LONG).show()
                 } else if (url.isEmpty()) {
                     Toast.makeText(this@MainActivity, "لینک یک ویدئوی یوتیوب را وارد کنید", Toast.LENGTH_SHORT).show()
                 } else {
@@ -124,15 +129,15 @@ class MainActivity : Activity() {
         }
 
         val guide = TextView(this).apply {
-            text = "راهنما: بعد از سبز شدن مجوز اول، در اپ یوتیوب زیر هر ویدئو دکمه Share را بزنید و «زیرنویس‌یار» را انتخاب کنید تا پنجره خودکار باز شود."
+            text = "راهنما: یک بار با گزینه ۳ وارد یوتیوب شوید؛ بعد از آن در اپ یوتیوب روی Share → زیرنویس‌یار بزنید."
             textSize = 13f
             setTextColor(0xFF9CA3AF.toInt())
-            setPadding(0, 36, 0, 0)
+            setPadding(0, 32, 0, 0)
         }
 
         layout.addView(title); layout.addView(subtitle); layout.addView(overlayStatusBtn)
-        layout.addView(notifStatusBtn); layout.addView(divider); layout.addView(urlInput)
-        layout.addView(startBtn); layout.addView(guide)
+        layout.addView(notifStatusBtn); layout.addView(loginStatusBtn); layout.addView(divider)
+        layout.addView(urlInput); layout.addView(startBtn); layout.addView(guide)
         root.addView(layout)
         setContentView(root)
     }
@@ -142,22 +147,86 @@ class MainActivity : Activity() {
         refreshPermissionsUI()
     }
 
+    private fun isYtLoggedIn(): Boolean {
+        val c = CookieManager.getInstance().getCookie("https://www.youtube.com") ?: ""
+        return c.contains("SID=") || c.contains("SAPISID=") || c.contains("LOGIN_INFO=")
+    }
+
     private fun refreshPermissionsUI() {
         val canOverlay = Settings.canDrawOverlays(this)
-        overlayStatusBtn.text = if (canOverlay) "✅ مجوز نمایش روی برنامه‌ها (فعال است)" else "⚠️ ۱. فعال‌سازی مجوز نمایش روی برنامه‌ها (کلیک کنید)"
+        overlayStatusBtn.text = if (canOverlay) "✅ مجوز نمایش روی برنامه‌ها (فعال است)" else "⚠️ ۱. فعال‌سازی مجوز نمایش روی برنامه‌ها"
         (overlayStatusBtn.background as GradientDrawable).setStroke(3, if (canOverlay) 0xFF10B981.toInt() else 0xFFF59E0B.toInt())
 
         val canNotif = Build.VERSION.SDK_INT < 33 || checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
-        notifStatusBtn.text = if (canNotif) "✅ مجوز اعلان‌ها (فعال است)" else "🔔 ۲. فعال‌سازی مجوز اعلان‌ها (اختیاری - کلیک کنید)"
+        notifStatusBtn.text = if (canNotif) "✅ مجوز اعلان‌ها (فعال است)" else "🔔 ۲. فعال‌سازی مجوز اعلان‌ها (اختیاری)"
         (notifStatusBtn.background as GradientDrawable).setStroke(2, if (canNotif) 0xFF10B981.toInt() else 0xFF374151.toInt())
+
+        val loggedIn = isYtLoggedIn()
+        loginStatusBtn.text = if (loggedIn) "✅ حساب یوتیوب متصل است (برای تغییر کلیک کنید)" else "🔑 ۳. ورود به حساب یوتیوب (رفع دائمی خطای ربات)"
+        (loginStatusBtn.background as GradientDrawable).setStroke(3, if (loggedIn) 0xFF10B981.toInt() else 0xFFF59E0B.toInt())
+    }
+
+    @SuppressLint("SetJavaScriptEnabled")
+    private fun openYoutubeLogin() {
+        val dialog = Dialog(this, android.R.style.Theme_Black_NoTitleBar_Fullscreen)
+        val container = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(0xFF090D0C.toInt())
+        }
+        val topBar = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(24, 20, 24, 20)
+            setBackgroundColor(0xFF141B19.toInt())
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        val info = TextView(this).apply {
+            text = "بعد از ورود به حساب، دکمه ثبت را بزنید"
+            textSize = 12f
+            setTextColor(0xFFFFFFFF.toInt())
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        }
+        val doneBtn = Button(this).apply {
+            text = "✅ ثبت و بازگشت"
+            textSize = 12f
+            setTextColor(0xFF000000.toInt())
+            setBackgroundColor(0xFF10B981.toInt())
+            setOnClickListener {
+                CookieManager.getInstance().flush()
+                dialog.dismiss()
+                refreshPermissionsUI()
+            }
+        }
+        topBar.addView(info); topBar.addView(doneBtn)
+
+        val wv = WebView(this).apply {
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f)
+            settings.javaScriptEnabled = true
+            settings.domStorageEnabled = true
+            settings.userAgentString = "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36"
+            webViewClient = object : WebViewClient() {
+                override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean = false
+            }
+        }
+        CookieManager.getInstance().setAcceptCookie(true)
+        CookieManager.getInstance().setAcceptThirdPartyCookies(wv, true)
+        wv.loadUrl("https://accounts.google.com/ServiceLogin?service=youtube&continue=https%3A%2F%2Fm.youtube.com%2F")
+
+        container.addView(topBar); container.addView(wv)
+        dialog.setContentView(container)
+        dialog.setOnDismissListener {
+            CookieManager.getInstance().flush()
+            wv.destroy()
+            refreshPermissionsUI()
+        }
+        dialog.show()
     }
 
     private fun createCardButton(label: String, onClick: () -> Unit): Button {
         return Button(this).apply {
             text = label; textSize = 14f; isAllCaps = false
-            setTextColor(0xFFFFFFFF.toInt()); setPadding(32, 32, 32, 32)
+            setTextColor(0xFFFFFFFF.toInt()); setPadding(32, 30, 32, 30)
             background = GradientDrawable().apply { setColor(0xFF141B19.toInt()); cornerRadius = 22f; setStroke(2, 0xFF374151.toInt()) }
-            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { setMargins(0, 0, 0, 20) }
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { setMargins(0, 0, 0, 18) }
             setOnClickListener { onClick() }
         }
     }
@@ -286,8 +355,18 @@ class OverlayService : Service() {
     }
         @SuppressLint("SetJavaScriptEnabled")
     private fun loadCaptionsViaWebView(videoId: String) {
+        val cookieStr = CookieManager.getInstance().getCookie("https://www.youtube.com") ?: ""
+        val loggedIn = cookieStr.contains("SID=") || cookieStr.contains("SAPISID=") || cookieStr.contains("LOGIN_INFO=")
+        if (loggedIn) {
+            uiHandler.post {
+                subTextView.text = "در حال دریافت زیرنویس با حساب شما..."
+                startWebViewFallback(videoId, "LOGGED_IN")
+            }
+            return
+        }
+
         serviceScope.launch {
-            withContext(Dispatchers.Main) { subTextView.text = "در حال دریافت زیرنویس (روش سریع)..." }
+            withContext(Dispatchers.Main) { subTextView.text = "در حال دریافت زیرنویس..." }
             val (apiBody, apiStatus) = fetchCaptionsFromClients(videoId)
             if (!apiBody.isNullOrEmpty()) {
                 captionHandled = true
@@ -296,7 +375,7 @@ class OverlayService : Service() {
                 return@launch
             }
             withContext(Dispatchers.Main) {
-                subTextView.text = "تلاش با مرورگر داخلی ($apiStatus)..."
+                subTextView.text = "تلاش با مرورگر داخلی..."
                 startWebViewFallback(videoId, apiStatus)
             }
         }
@@ -313,11 +392,6 @@ class OverlayService : Service() {
                 "IOS",
                 "com.google.ios.youtube/19.45.4 (iPhone16,2; U; CPU iOS 18_1_0 like Mac OS X;)",
                 """{"context":{"client":{"clientName":"IOS","clientVersion":"19.45.4","deviceMake":"Apple","deviceModel":"iPhone16,2","osName":"iPhone","osVersion":"18.1.0.22B83","hl":"en"}},"videoId":"$videoId"}"""
-            ),
-            Triple(
-                "TV",
-                "Mozilla/5.0 (SMART-TV; Linux; Tizen 6.0) AppleWebKit/538.1",
-                """{"context":{"client":{"clientName":"TVHTML5_SIMPLY_EMBEDDED_PLAYER","clientVersion":"2.0","hl":"en"},"thirdParty":{"embedUrl":"https://www.youtube.com/"}},"videoId":"$videoId"}"""
             )
         )
 
@@ -376,6 +450,8 @@ class OverlayService : Service() {
         wv.settings.domStorageEnabled = true
         wv.settings.mediaPlaybackRequiresUserGesture = true
         wv.settings.userAgentString = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+        CookieManager.getInstance().setAcceptCookie(true)
+        CookieManager.getInstance().setAcceptThirdPartyCookies(wv, true)
 
         try {
             val flag = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY else @Suppress("DEPRECATION") WindowManager.LayoutParams.TYPE_PHONE
@@ -412,7 +488,7 @@ class OverlayService : Service() {
                       try {
                         const sleep = ms => new Promise(r => setTimeout(r, ms));
                         let pr = null;
-                        for (let i = 0; i < 10; i++) {
+                        for (let i = 0; i < 12; i++) {
                           document.querySelectorAll('video').forEach(v => { v.muted = true; v.pause(); });
                           const mp = document.getElementById('movie_player');
                           pr = (mp && mp.getPlayerResponse) ? mp.getPlayerResponse() : window.ytInitialPlayerResponse;
@@ -427,8 +503,8 @@ class OverlayService : Service() {
                         }
                         let tr = tracks.find(t => t.languageCode && t.languageCode.startsWith("en")) || tracks[0];
                         let u = tr.baseUrl + (tr.baseUrl.includes("fmt=") ? "" : "&fmt=json3");
-                        let txt = await (await fetch(u)).text();
-                        if (!txt || txt.length < 20) txt = await (await fetch(tr.baseUrl)).text();
+                        let txt = await (await fetch(u, { credentials: 'include' })).text();
+                        if (!txt || txt.length < 20) txt = await (await fetch(tr.baseUrl, { credentials: 'include' })).text();
                         if (txt && txt.length >= 20) AndroidBridge.onRawCaptions(txt);
                         else AndroidBridge.onFail("فایل زیرنویس خالی بود");
                       } catch (e) {
