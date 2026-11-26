@@ -19,6 +19,8 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONArray
 import org.json.JSONObject
+import java.net.HttpURLConnection
+import java.net.URL
 import java.net.URLEncoder
 import java.util.concurrent.TimeUnit
 import java.util.regex.Pattern
@@ -178,7 +180,7 @@ class OverlayService : Service() {
     private lateinit var playPauseBtn: Button
 
     private var hiddenWebView: WebView? = null
-    private var captionHandled = false
+    @Volatile private var captionHandled = false
 
     private val client = OkHttpClient.Builder()
         .connectTimeout(20, TimeUnit.SECONDS)
@@ -230,7 +232,7 @@ class OverlayService : Service() {
         isPlaying = false
         currentTimeMs = 0L
         captionHandled = false
-        subTextView.text = "در حال اتصال به پلیر یوتیوب..."
+        subTextView.text = "در حال اتصال به یوتیوب..."
         loadCaptionsViaWebView(videoId)
         return START_NOT_STICKY
     }
@@ -282,110 +284,7 @@ class OverlayService : Service() {
         statusTextView.text = String.format("⠿ %02d:%02d", sec / 60, sec % 60)
         subtitles.find { currentTimeMs in it.startMs..it.endMs }?.let { subTextView.text = it.textFa }
     }
-                            let tr = tracks.find(t => t.languageCode && t.languageCode.startsWith("en")) || tracks[0];
-                            let uJson = tr.baseUrl + (tr.baseUrl.includes("fmt=") ? "" : "&fmt=json3");
-                            let resp = await fetch(uJson);
-                            let txt = await resp.text();
-                            if (!txt || txt.length < 20) {
-                              resp = await fetch(tr.baseUrl);
-                              txt = await resp.text();
-                            }
-                            if (txt && txt.length > 20) {
-                              AndroidBridge.onRawCaptions(txt);
-                            } else {
-                              AndroidBridge.onFail("فایل زیرنویس خالی دریافت شد.");
-                            }
-                          } catch (e) {
-                            AndroidBridge.onFail("خطا: " + e.message);
-                          }
-                        })();
-                    """.trimIndent()
-                    view?.evaluateJavascript(js, null)
-                }
-            }
-            wv.loadUrl("https://www.youtube.com/watch?v=$videoId&hl=en")
-        }
-    }
-
-    private fun processAndTranslateBody(body: String) {
-        serviceScope.launch {
-            val raw = mutableListOf<Triple<Long, Long, String>>()
-            try {
-                if (body.trim().startsWith("{")) {
-                    val events = JSONObject(body).optJSONArray("events")
-                    if (events != null) {
-                        for (i in 0 until events.length()) {
-                            val ev = events.getJSONObject(i)
-                            if (!ev.has("segs")) continue
-                            val st = ev.optLong("tStartMs", 0L)
-                            val dur = ev.optLong("dDurationMs", 2500L)
-                            val segs = ev.getJSONArray("segs")
-                            val sb = StringBuilder()
-                            for (j in 0 until segs.length()) sb.append(segs.getJSONObject(j).optString("utf8", ""))
-                            val txt = sb.toString().replace("\n", " ").trim()
-                            if (txt.isNotEmpty()) raw.add(Triple(st, st + dur, txt))
-                        }
-                    }
-                } else if (body.contains("<text")) {
-                    val m = Pattern.compile("<text start=\"([0-9.]+)\"(?: dur=\"([0-9.]+)\")?[^>]*>(.*?)</text>", Pattern.DOTALL).matcher(body)
-                    while (m.find()) {
-                        val st = ((m.group(1)?.toDoubleOrNull() ?: 0.0) * 1000).toLong()
-                        val dur = ((m.group(2)?.toDoubleOrNull() ?: 2.5) * 1000).toLong()
-                        val decoded = Html.fromHtml(m.group(3) ?: "", Html.FROM_HTML_MODE_LEGACY).toString().replace("\n", " ").trim()
-                        if (decoded.isNotEmpty()) raw.add(Triple(st, st + dur, decoded))
-                    }
-                }
-            } catch (_: Exception) { }
-
-            if (raw.isEmpty()) {
-                withContext(Dispatchers.Main) { subTextView.text = "متن زیرنویس قابل خواندن نبود." }
-                return@launch
-            }
-
-            val res = mutableListOf<SubLine>()
-            for (chunk in raw.chunked(15)) {
-                val tr = translateToFa(chunk.joinToString("\n") { it.third }).split("\n")
-                chunk.forEachIndexed { idx, line ->
-                    res.add(SubLine(line.first, line.second, tr.getOrElse(idx) { line.third }))
-                }
-            }
-            withContext(Dispatchers.Main) {
-                subtitles = res
-                subTextView.text = "آماده! هم‌زمان با ویدئو ▶ را بزنید."
-            }
-        }
-    }
-
-    private fun translateToFa(text: String): String {
-        return try {
-            val url = "https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=fa&dt=t&q=${URLEncoder.encode(text, "UTF-8")}"
-            val body = client.newCall(Request.Builder().url(url).build()).execute().body?.string() ?: return text
-            val arr = JSONArray(body).getJSONArray(0)
-            buildString { for (i in 0 until arr.length()) append(arr.getJSONArray(i).getString(0)) }
-        } catch (e: Exception) {
-            text
-        }
-    }
-
-    private fun destroyWebView() {
-        hiddenWebView?.let {
-            runCatching { windowManager.removeView(it) }
-            it.stopLoading()
-            it.loadUrl("about:blank")
-            it.destroy()
-        }
-        hiddenWebView = null
-    }
-
-    override fun onDestroy() {
-        super.onDestroy()
-        uiHandler.removeCallbacks(ticker)
-        serviceScope.cancel()
-        destroyWebView()
-        if (::overlayView.isInitialized) windowManager.removeView(overlayView)
-    }
-}
-    @SuppressLint("SetJavaScriptEnabled")
+        @SuppressLint("SetJavaScriptEnabled")
     private fun loadCaptionsViaWebView(videoId: String) {
         serviceScope.launch {
             withContext(Dispatchers.Main) { subTextView.text = "در حال دریافت زیرنویس (روش سریع)..." }
@@ -425,7 +324,7 @@ class OverlayService : Service() {
         var lastStatus = "NO_TRACKS"
         for ((tag, ua, payload) in clients) {
             try {
-                val conn = java.net.URL("https://www.youtube.com/youtubei/v1/player?prettyPrint=false").openConnection() as java.net.HttpURLConnection
+                val conn = URL("https://www.youtube.com/youtubei/v1/player?prettyPrint=false").openConnection() as HttpURLConnection
                 conn.requestMethod = "POST"
                 conn.connectTimeout = 15000
                 conn.readTimeout = 15000
