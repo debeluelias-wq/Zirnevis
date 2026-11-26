@@ -465,11 +465,31 @@ class OverlayService : Service() {
 
         wv.addJavascriptInterface(object {
             @JavascriptInterface
-            fun onRawCaptions(rawBody: String) {
+            fun onCaptionUrl(rawUrl: String) {
                 if (captionHandled) return
                 captionHandled = true
-                uiHandler.post { destroyWebView(); subTextView.text = "در حال ترجمه زیرنویس به فارسی..." }
-                processAndTranslateBody(rawBody)
+                val fullUrl = if (rawUrl.startsWith("http")) rawUrl else "https://www.youtube.com$rawUrl"
+                val cookies = CookieManager.getInstance().getCookie("https://www.youtube.com") ?: ""
+                uiHandler.post { destroyWebView(); subTextView.text = "در حال دانلود و ترجمه زیرنویس..." }
+                serviceScope.launch {
+                    try {
+                        val ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+                        val jsonUrl = if (fullUrl.contains("fmt=")) fullUrl else "$fullUrl&fmt=json3"
+                        val r1 = Request.Builder().url(jsonUrl).header("Cookie", cookies).header("User-Agent", ua).header("Referer", "https://www.youtube.com/").build()
+                        var body = client.newCall(r1).execute().body?.string() ?: ""
+                        if (body.length < 20) {
+                            val r2 = Request.Builder().url(fullUrl).header("Cookie", cookies).header("User-Agent", ua).header("Referer", "https://www.youtube.com/").build()
+                            body = client.newCall(r2).execute().body?.string() ?: ""
+                        }
+                        if (body.length >= 20) {
+                            processAndTranslateBody(body)
+                        } else {
+                            withContext(Dispatchers.Main) { subTextView.text = "فایل زیرنویس خالی برگشت" }
+                        }
+                    } catch (e: Exception) {
+                        withContext(Dispatchers.Main) { subTextView.text = "خطای دانلود: ${e.message}" }
+                    }
+                }
             }
 
             @JavascriptInterface
@@ -502,13 +522,7 @@ class OverlayService : Service() {
                           return;
                         }
                         let tr = tracks.find(t => t.languageCode && t.languageCode.startsWith("en")) || tracks[0];
-                                                let p = new URL(tr.baseUrl, location.origin);
-                        let rel = p.pathname + p.search;
-                        let u = rel + (rel.includes("fmt=") ? "" : "&fmt=json3");
-                        let txt = await (await fetch(u, { credentials: 'include' })).text();
-                        if (!txt || txt.length < 20) txt = await (await fetch(rel, { credentials: 'include' })).text();
-                        if (txt && txt.length >= 20) AndroidBridge.onRawCaptions(txt);
-                        else AndroidBridge.onFail("فایل زیرنویس خالی بود");
+                        AndroidBridge.onCaptionUrl(tr.baseUrl);
                       } catch (e) {
                         AndroidBridge.onFail("خطا: " + e.message);
                       }
