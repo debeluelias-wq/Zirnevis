@@ -502,9 +502,11 @@ class OverlayService : Service() {
                           return;
                         }
                         let tr = tracks.find(t => t.languageCode && t.languageCode.startsWith("en")) || tracks[0];
-                        let u = tr.baseUrl + (tr.baseUrl.includes("fmt=") ? "" : "&fmt=json3");
+                                                let p = new URL(tr.baseUrl, location.origin);
+                        let rel = p.pathname + p.search;
+                        let u = rel + (rel.includes("fmt=") ? "" : "&fmt=json3");
                         let txt = await (await fetch(u, { credentials: 'include' })).text();
-                        if (!txt || txt.length < 20) txt = await (await fetch(tr.baseUrl, { credentials: 'include' })).text();
+                        if (!txt || txt.length < 20) txt = await (await fetch(rel, { credentials: 'include' })).text();
                         if (txt && txt.length >= 20) AndroidBridge.onRawCaptions(txt);
                         else AndroidBridge.onFail("فایل زیرنویس خالی بود");
                       } catch (e) {
